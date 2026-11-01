@@ -31,25 +31,41 @@ class UserProfile:
     likes_acoustic: bool
 
 import csv
-from typing import List, Dict, Tuple
+from dataclasses import asdict
+from typing import List, Dict, Tuple, Union
+
+def _song_to_dict(song: Union[Song, Dict]) -> Dict:
+    """Convert a Song dataclass to a dict so score_song can use it."""
+    return asdict(song) if isinstance(song, Song) else song
+
+def _user_to_prefs(user: Union[UserProfile, Dict]) -> Dict:
+    """Convert a UserProfile dataclass to the prefs dict format used by score_song."""
+    if isinstance(user, UserProfile):
+        return {
+            "preferred_genre": user.favorite_genre,
+            "preferred_mood": user.favorite_mood,
+            "target_energy": user.target_energy,
+        }
+    return user
 
 class Recommender:
     """
     OOP implementation of the recommendation logic.
     Required by tests/test_recommender.py
     """
-    def __init__(self, songs: List[Dict]):
+    def __init__(self, songs: List[Union[Song, Dict]]):
         """Store the song catalog used for recommendations."""
         self.songs = songs
 
-    def recommend(self, user: Dict, k: int = 5) -> List[Dict]:
-        """Return the top-k song dicts that best match the user's preferences."""
-        recommendations = recommend_songs(user, self.songs, k)
-        return [rec[0] for rec in recommendations]  # Extract only the song dictionaries
+    def recommend(self, user: Union[UserProfile, Dict], k: int = 5) -> List[Union[Song, Dict]]:
+        """Return the top-k songs (in their original form) that best match the user's preferences."""
+        prefs = _user_to_prefs(user)
+        ranked = sorted(self.songs, key=lambda s: score_song(prefs, _song_to_dict(s))[0], reverse=True)
+        return ranked[:k]
 
-    def explain_recommendation(self, user: Dict, song: Dict) -> str:
+    def explain_recommendation(self, user: Union[UserProfile, Dict], song: Union[Song, Dict]) -> str:
         """Return a human-readable explanation of why a song was recommended."""
-        _, reasons = score_song(user, song)
+        _, reasons = score_song(_user_to_prefs(user), _song_to_dict(song))
         return f"Recommended because: {', '.join(reasons)}"
 
 def load_songs(csv_path: str) -> List[Dict]:
@@ -68,14 +84,20 @@ def load_songs(csv_path: str) -> List[Dict]:
             songs.append(row)
     return songs
 
+# Experiment (Step 3 - Weight Shift): genre halved 2.0 -> 1.0, energy doubled 1.5 -> 3.0.
+# Original weights: GENRE_WEIGHT = 2.0, ENERGY_WEIGHT = 1.5 (max score 6.5).
+# With these weights each similarity is in [0, 1], so the max score is 1 + 1 + 3 + 1 + 1 = 7.0.
+GENRE_WEIGHT = 1.0
+ENERGY_WEIGHT = 3.0
+
 def score_song(user_prefs: Dict, song: Dict) -> Tuple[float, List[str]]:
     """Score a song against user preferences and return (score, reasons)."""
     score = 0.0
     reasons = []
 
-    # +2.0 points for genre match
+    # Genre match bonus
     if song['genre'] == user_prefs['preferred_genre']:
-        score += 2.0
+        score += GENRE_WEIGHT
         reasons.append("Genre match")
 
     # +1.0 point for mood match
@@ -85,19 +107,21 @@ def score_song(user_prefs: Dict, song: Dict) -> Tuple[float, List[str]]:
 
     # Energy similarity
     energy_similarity = 1.0 - abs(song['energy'] - user_prefs['target_energy'])
-    score += 1.5 * energy_similarity
+    score += ENERGY_WEIGHT * energy_similarity
     reasons.append(f"Energy similarity: {energy_similarity:.2f}")
 
-    # Tempo similarity
-    max_tempo = 200  # Assuming a max tempo for normalization
-    tempo_similarity = 1.0 - abs(song['tempo_bpm'] - user_prefs['target_tempo']) / max_tempo
-    score += 1.0 * tempo_similarity
-    reasons.append(f"Tempo similarity: {tempo_similarity:.2f}")
+    # Tempo similarity (skipped if the user has no tempo preference)
+    if 'target_tempo' in user_prefs:
+        max_tempo = 200  # Assuming a max tempo for normalization
+        tempo_similarity = 1.0 - abs(song['tempo_bpm'] - user_prefs['target_tempo']) / max_tempo
+        score += 1.0 * tempo_similarity
+        reasons.append(f"Tempo similarity: {tempo_similarity:.2f}")
 
-    # Valence similarity
-    valence_similarity = 1.0 - abs(song['valence'] - user_prefs['target_valence'])
-    score += 1.0 * valence_similarity
-    reasons.append(f"Valence similarity: {valence_similarity:.2f}")
+    # Valence similarity (skipped if the user has no valence preference)
+    if 'target_valence' in user_prefs:
+        valence_similarity = 1.0 - abs(song['valence'] - user_prefs['target_valence'])
+        score += 1.0 * valence_similarity
+        reasons.append(f"Valence similarity: {valence_similarity:.2f}")
 
     return score, reasons
 
